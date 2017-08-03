@@ -684,21 +684,7 @@ defmodule Mongo.Ecto do
     raise ArgumentError, "MongoDB adapter does not support SQL statements as collection options"
   end
 
-  def execute_ddl(repo, {:create, %Index{} = command}, opts) do
-    index = [name: to_string(command.name),
-             unique: command.unique,
-             background: command.concurrently,
-             key: Enum.map(command.columns, &{&1, 1}),
-             ns: namespace(repo, command.table, command.prefix)]
-
-    # TODO: move this into normalized query for consistent coverage
-    query = %WriteQuery{coll: "system.indexes", command: index}
-
-    case Connection.insert(repo, query, db_opt(command.prefix) ++ opts) do
-      {:ok, _} -> :ok
-      {:invalid, [unique: index]} -> raise Connection.format_constraint_error(index)
-    end
-  end
+  def execute_ddl(repo, {:create, %Index{} = command}, opts), do: create_index(repo, command, opts)
 
   def execute_ddl(repo, {:drop, %Index{name: name, table: coll, prefix: p}}, opts) do
     command(repo, [dropIndexes: coll, index: to_string(name)], db_opt(p) ++ opts)
@@ -763,6 +749,39 @@ defmodule Mongo.Ecto do
   def in_transaction?(_repo), do: false
 
   ## Mongo specific calls
+
+  @doc """
+  Create index
+  """
+  def create_index(repo, command, opts), do: create_index(repo, command.using, command, opts)
+
+  # original create index implementation (probably bears refactoring, but it works)
+  def create_index(repo, nil, command, opts) do
+    index = [name: to_string(command.name),
+             unique: command.unique,
+             background: command.concurrently,
+             key: Enum.map(command.columns, &{&1, 1}),
+             ns: namespace(repo, command.table, command.prefix)]
+
+    query = %WriteQuery{coll: "system.indexes", command: index}
+
+    case Connection.insert(repo, query, db_opt(command.prefix) ++ opts) do
+      {:ok, _} -> :ok
+      {:invalid, [unique: index]} -> raise Connection.format_constraint_error(index)
+    end
+  end
+
+  # utilize command api with createIndexes command to generate text indices
+  def create_index(repo, :text, command, opts) do
+    command(repo, [
+      createIndexes: command.table,
+      indexes: [ %{
+        name: to_string(command.name),
+        background: command.concurrently,
+        key: Enum.map(command.columns, &( {&1, "text"} )),
+        ns: namespace(repo, command.table, command.prefix),
+    }]], db_opt(command.prefix) ++ opts)
+  end
 
   @doc """
   Drops all the collections in current database.
